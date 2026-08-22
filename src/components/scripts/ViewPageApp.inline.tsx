@@ -14,7 +14,12 @@ interface DocPreview {
   structure: DocStructure[];
 }
 
-const API_URL = 'https://docingest.iamrp.dev/api';
+const getApiUrl = () => {
+  if (typeof window !== 'undefined') {
+    return (window as any).__DOCINGEST_API_URL__ || (window as any).DOCINGEST_API_URL || 'https://docingest.iamrp.dev/api';
+  }
+  return 'https://docingest.iamrp.dev/api';
+};
 
 const getPrimaryDomain = (domain: string) => {
   const cleanDomain = domain.replace(/^docs\./, '').replace(/\.ai$/, '');
@@ -50,6 +55,7 @@ const ViewPageApp = () => {
   }, []);
 
   const fetchDocs = useCallback(async (isInitial = false) => {
+    const API_URL = getApiUrl();
     if (isInitial) {
       setIsLoading(true);
     }
@@ -101,6 +107,7 @@ const ViewPageApp = () => {
   };
 
   const handleCopy = async (doc: DocPreview) => {
+    const API_URL = getApiUrl();
     try {
       if (!doc.filePath && !doc.domain) throw new Error('File path not available');
       const param = doc.filePath ? `path=${encodeURIComponent(doc.filePath)}` : `domain=${encodeURIComponent(doc.domain)}`;
@@ -118,6 +125,7 @@ const ViewPageApp = () => {
   };
 
   const handleDownload = async (doc: DocPreview) => {
+    const API_URL = getApiUrl();
     try {
       const param = doc.filePath ? `path=${encodeURIComponent(doc.filePath)}` : `domain=${encodeURIComponent(doc.domain)}`;
       const response = await fetch(`${API_URL}/docs/download?${param}`);
@@ -139,6 +147,7 @@ const ViewPageApp = () => {
   };
 
   const handlePreview = async (doc: DocPreview) => {
+    const API_URL = getApiUrl();
     try {
       const param = doc.filePath ? `path=${encodeURIComponent(doc.filePath)}` : `domain=${encodeURIComponent(doc.domain)}`;
       const response = await fetch(`${API_URL}/docs/content?${param}`);

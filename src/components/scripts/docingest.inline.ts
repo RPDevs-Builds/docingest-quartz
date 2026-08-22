@@ -17,10 +17,10 @@ document.addEventListener("nav", () => {
       if (!docList) return;
       
       try {
-        const res = await fetch(`${apiUrl}/documents`);
+        const res = await fetch(`${apiUrl}/docs/list?page=1&limit=20`);
         if (!res.ok) throw new Error("Failed to fetch documents");
         const data = await res.json();
-        allDocs = data.documents || [];
+        allDocs = data.docs || [];
         renderDocuments(allDocs);
       } catch (err: any) {
         docList.innerHTML = `<li class="empty-state">Error loading documents: ${err.message}</li>`;
@@ -36,12 +36,11 @@ document.addEventListener("nav", () => {
       }
 
       docList.innerHTML = docs.map(doc => `
-        <li class="doc-card">
-          <h4>${doc.title || 'Untitled Document'}</h4>
-          <a href="${doc.url}" target="_blank" rel="noopener noreferrer" class="doc-url">${doc.url}</a>
-          <div class="doc-meta">
-            <span>${new Date(doc.created_at || Date.now()).toLocaleDateString()}</span>
-            <span>${doc.status || 'Processed'}</span>
+        <li class="doc-card" style="padding: 0.75rem; border: 1px solid #332d4a; border-radius: 4px; margin-bottom: 0.5rem; background: #1e1b2e;">
+          <h4 style="margin: 0 0 0.25rem 0; color: #ffffff;">${doc.domain}</h4>
+          <a href="${doc.url || ('https://' + doc.domain)}" target="_blank" rel="noopener noreferrer" class="doc-url" style="color: #00ff00; font-size: 0.85rem;">${doc.domain}</a>
+          <div class="doc-meta" style="color: #8b889c; font-size: 0.8rem; margin-top: 0.25rem;">
+            <span>Indexed: ${new Date(doc.lastUpdated || Date.now()).toLocaleDateString()}</span>
           </div>
         </li>
       `).join('');
@@ -54,26 +53,33 @@ document.addEventListener("nav", () => {
 
         submitBtn.disabled = true;
         submitBtn.textContent = "Ingesting...";
-        statusDiv.textContent = "Ingesting document. This may take a moment...";
+        statusDiv.textContent = "Queueing document for ingestion...";
         statusDiv.className = "docingest-status";
 
         try {
-          const res = await fetch(`${apiUrl}/ingest`, {
+          const res = await fetch(`${apiUrl}/crawl/start`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ url })
+            body: JSON.stringify({ 
+              url,
+              limit: 100,
+              maxDepth: 5,
+              scrapeOptions: {
+                formats: ['markdown', 'html'],
+                onlyMainContent: true
+              }
+            })
           });
 
           const data = await res.json();
-          if (!res.ok) throw new Error(data.error || "Failed to ingest URL");
+          if (!res.ok) throw new Error(data.error || "Failed to initiate crawl");
 
-          statusDiv.textContent = "Successfully ingested document!";
+          statusDiv.textContent = `Job queued successfully (Task ID: ${data.id || 'Active'})!`;
           statusDiv.className = "docingest-status success";
           urlInput.value = "";
           
-          // Refresh list if it exists on the same page
           if (docList) {
-            fetchDocuments();
+            setTimeout(fetchDocuments, 2000);
           }
         } catch (err: any) {
           statusDiv.textContent = `Error: ${err.message}`;
@@ -94,7 +100,7 @@ document.addEventListener("nav", () => {
         }
         
         const filtered = allDocs.filter(doc => 
-          (doc.title && doc.title.toLowerCase().includes(query)) ||
+          (doc.domain && doc.domain.toLowerCase().includes(query)) ||
           (doc.url && doc.url.toLowerCase().includes(query))
         );
         renderDocuments(filtered);

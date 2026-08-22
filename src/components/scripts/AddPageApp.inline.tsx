@@ -1,8 +1,13 @@
 import { h, render } from 'preact';
 import { useState, useEffect, useRef, useCallback } from 'preact/hooks';
 
-// API configuration
-const API_URL = 'https://docingest.iamrp.dev/api';
+// API configuration with dynamic fallback
+const getApiUrl = () => {
+  if (typeof window !== 'undefined') {
+    return (window as any).__DOCINGEST_API_URL__ || (window as any).DOCINGEST_API_URL || 'https://docingest.iamrp.dev/api';
+  }
+  return 'https://docingest.iamrp.dev/api';
+};
 
 interface DocPreview {
   content?: string;
@@ -174,6 +179,7 @@ const AddPageApp = () => {
   };
 
   const loadSavedData = async (limitCount = 6) => {
+    const API_URL = getApiUrl();
     try {
       setnewDataLoading(true);
       const res = await fetch(`${API_URL}/docs/list?page=${page}&limit=${limitCount}`);
@@ -240,6 +246,7 @@ const AddPageApp = () => {
   };
 
   const pollCrawlStatus = async (id: string, domain: string, retryCount = 0) => {
+    const API_URL = getApiUrl();
     pollAttemptsRef.current++;
     if (pollAttemptsRef.current > maxPollAttempts) {
       logAndUpdateDebug(`⏰ TIMEOUT: Crawl exceeded maximum duration limit.`);
@@ -280,9 +287,48 @@ const AddPageApp = () => {
       logAndUpdateDebug(`⚡ Progress: ${completed} / ${total} pages indexed (${statusData.status})`);
 
       if (statusData.status === 'completed') {
-        logAndUpdateDebug(`🎉 Crawl completed successfully for domain: ${domain}!`);
+        logAndUpdateDebug(`🎉 Crawl completed! Processing markdown payload...`);
         setIsCrawling(false);
-        // Refresh saved docs
+
+        // Build save payload
+        const timestamp = new Date().toISOString();
+        const pages: DocPreview[] = (statusData.data || [])
+          .filter((item: any) => Boolean(item.markdown && item.metadata?.sourceURL))
+          .map((item: any) => ({
+            content: item.markdown || '',
+            type: item.metadata?.title || 'Unknown',
+            lastUpdated: timestamp,
+            url: item.metadata?.sourceURL,
+            domain,
+          }));
+
+        try {
+          const requestData = {
+            domain,
+            timestamp,
+            pages,
+            crawlId: id,
+            crawlOutcomes: statusData.outcomes || [],
+            providerTotals: statusData.providerTotals,
+          };
+          logAndUpdateDebug(`💾 Saving documentation (${pages.length} pages) to database & filesystem...`);
+          const saveRes = await fetch(`${API_URL}/docs/save`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestData)
+          });
+          const savedData = await saveRes.json().catch(() => null);
+
+          if (saveRes.ok && savedData?.success) {
+            logAndUpdateDebug(`✅ Successfully saved and indexed: ${savedData.filePath || domain}`);
+          } else {
+            logAndUpdateDebug(`ℹ️ Saved with response: ${savedData?.error || saveRes.statusText}`);
+          }
+        } catch (saveErr: any) {
+          logAndUpdateDebug(`⚠️ Failed to save docs: ${saveErr.message}`);
+        }
+
+        // Refresh saved docs catalog
         loadSavedData(6);
       } else if (statusData.status === 'failed') {
         logAndUpdateDebug(`❌ Crawl job failed: ${statusData.error || 'Unknown error'}`);
@@ -304,6 +350,7 @@ const AddPageApp = () => {
   };
 
   const handleCrawl = async () => {
+    const API_URL = getApiUrl();
     if (!validateUrl(url) || !validatePattern(includePattern, 'include') || !validatePattern(excludePattern, 'exclude')) {
       return;
     }

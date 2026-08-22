@@ -1,4 +1,5 @@
 import type { ComponentType } from "preact";
+// @ts-ignore
 import script from "./scripts/ViewPageApp.inline";
 
 export type QuartzComponentProps = { [key: string]: any };
@@ -26,6 +27,7 @@ export default ((opts?: DocIngestOptions) => {
     return null;
   };
 
+  Component.beforeDOMLoaded = opts?.apiUrl ? `window.__DOCINGEST_API_URL__ = "${opts.apiUrl}";` : undefined;
   Component.afterDOMLoaded = script;
 
   return Component;
