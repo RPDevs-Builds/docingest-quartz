@@ -31,8 +31,8 @@ const inlineScriptPlugin: Plugin = {
       return { contents: result.css, loader: "text" };
     });
 
-    // Inline TypeScript files are transpiled + bundled for the browser
-    parentBuild.onLoad({ filter: /\.inline\.ts$/ }, async (args) => {
+    // Inline TypeScript/JSX files are transpiled + bundled for the browser
+    parentBuild.onLoad({ filter: /\.inline\.tsx?$/ }, async (args) => {
       const esbuild = await import("esbuild");
       const fs = await import("fs");
       let text = await fs.promises.readFile(args.path, "utf8");
@@ -44,11 +44,12 @@ const inlineScriptPlugin: Plugin = {
 
       const resolveDir = path.dirname(args.path);
       const sourcefile = path.relative(absWorkingDir, args.path);
+      const ext = path.extname(args.path).slice(1);
 
       const result = await esbuild.build({
         stdin: {
           contents: text,
-          loader: "ts",
+          loader: ext as "ts" | "tsx",
           resolveDir,
           sourcefile,
         },
@@ -59,6 +60,8 @@ const inlineScriptPlugin: Plugin = {
         format: "esm",
         target: "es2020",
         sourcemap: false,
+        jsx: "automatic",
+        jsxImportSource: "preact",
         // Preserve dynamic CDN imports (e.g. graph plugin loading d3/pixi from CDN)
         external: ["http://*", "https://*"],
       });

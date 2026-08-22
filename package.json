@@ -1,29 +1,19 @@
 {
-  "name": "@quartz-community/plugin-template",
+  "name": "docingest-quartz",
   "version": "0.1.0",
-  "description": "Template repository for Quartz community plugins.",
+  "description": "DocIngest integration for Quartz websites.",
   "type": "module",
   "license": "MIT",
-  "author": "Quartz Community",
-  "homepage": "https://quartz.jzhao.xyz",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/quartz-community/plugin-template"
-  },
+  "author": "DocIngest",
   "keywords": [
     "quartz",
     "quartz-plugin",
-    "plugin-template",
-    "remark",
-    "rehype",
-    "mdast",
-    "hast"
+    "docingest"
   ],
   "files": [
     "dist",
     "README.md",
-    "LICENSE",
-    "CHANGELOG.md"
+    "LICENSE"
   ],
   "exports": {
     ".": {
@@ -50,9 +40,7 @@
     "format": "prettier . --check",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && npm run lint && npm run format && npm run test",
-    "release": "npm run build && changeset publish",
-    "prepublishOnly": "npm run build"
+    "check": "npm run typecheck && npm run lint && npm run format && npm run test"
   },
   "peerDependencies": {
     "preact": "^10.0.0",
@@ -66,10 +54,7 @@
       "optional": true
     }
   },
-  "dependencies": {
-    "@quartz-community/types": "github:quartz-community/types",
-    "@quartz-community/utils": "github:quartz-community/utils"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@types/hast": "^3.0.4",
     "@types/mdast": "^4.0.4",
@@ -93,33 +78,35 @@
     "unified": "^11.0.5",
     "unist-util-visit": "^5.1.0",
     "vfile": "^6.0.3",
-    "vitest": "^2.1.9",
-    "@changesets/cli": "^2.29.0"
+    "vitest": "^2.1.9"
   },
   "quartz": {
-    "name": "plugin-template",
-    "displayName": "Plugin Template",
-    "category": "transformer",
+    "name": "docingest",
+    "displayName": "DocIngest",
+    "category": ["component"],
     "version": "1.0.0",
     "quartzVersion": ">=5.0.0",
     "dependencies": [],
     "defaultOrder": 50,
     "defaultEnabled": true,
-    "defaultOptions": {},
-    "optionSchema": {
-      "highlightToken": {
-        "type": "enum",
-        "values": [
-          "==",
-          "**",
-          "~~"
-        ]
-      }
+    "defaultOptions": {
+      "apiUrl": "http://10.14.0.22:8001/api"
     },
+    "optionSchema": {},
     "components": {
-      "ExampleComponent": {
-        "displayName": "Example Component",
+      "DocIngestWidget": {
+        "displayName": "DocIngest Form",
         "defaultPosition": "right",
+        "defaultPriority": 50
+      },
+      "DocIngestAdd": {
+        "displayName": "DocIngest Add App",
+        "defaultPosition": "pageBody",
+        "defaultPriority": 50
+      },
+      "DocIngestView": {
+        "displayName": "DocIngest View App",
+        "defaultPosition": "pageBody",
         "defaultPriority": 50
       }
     }
@@ -128,7 +115,7 @@
     "node": ">=22",
     "npm": ">=10.9.2"
   },
-  "publishConfig": {
-    "access": "public"
-  }
+  "trustedDependencies": [
+    "@parcel/watcher"
+  ]
 }
