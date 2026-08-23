@@ -38,7 +38,7 @@ document.addEventListener("nav", () => {
       docList.innerHTML = docs.map(doc => `
         <li class="doc-card" style="padding: 0.75rem; border: 1px solid #332d4a; border-radius: 4px; margin-bottom: 0.5rem; background: #1e1b2e;">
           <h4 style="margin: 0 0 0.25rem 0; color: #ffffff;">${doc.domain}</h4>
-          <a href="${doc.url || ('https://' + doc.domain)}" target="_blank" rel="noopener noreferrer" class="doc-url" style="color: #00ff00; font-size: 0.85rem;">${doc.domain}</a>
+          <a href="${doc.url || ('https://' + doc.domain)}" target="_blank" rel="noopener noreferrer" class="doc-url" style="color: #00afaf; font-size: 0.85rem;">${doc.domain}</a>
           <div class="doc-meta" style="color: #8b889c; font-size: 0.8rem; margin-top: 0.25rem;">
             <span>Indexed: ${new Date(doc.lastUpdated || Date.now()).toLocaleDateString()}</span>
           </div>

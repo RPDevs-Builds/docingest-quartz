@@ -15,17 +15,8 @@ interface DocPreview {
   lastUpdated: string;
   url?: string;
   domain: string;
-  filePath?: string;
+  filePath?: string | null;
   structure?: Array<{ type: string; url?: string }>;
-}
-
-interface SavedUrl {
-  url: string;
-  domain: string;
-  lastScraped: string;
-  totalPages: number;
-  successfulPages: number;
-  failedPages: string[];
 }
 
 interface ScrapingMetrics {
@@ -76,7 +67,6 @@ const AddPageApp = () => {
   const [maxPages, setMaxPages] = useState(250);
   const [isLoading, setIsLoading] = useState(false);
   const [isCrawling, setIsCrawling] = useState(false);
-  const [autoStartTriggered, setAutoStartTriggered] = useState(false);
 
   const [newDataLoading, setnewDataLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -86,6 +76,11 @@ const AddPageApp = () => {
   const debugLogRef = useRef<HTMLDivElement>(null);
 
   const [savedDocs, setSavedDocs] = useState<DocPreview[]>([]);
+  const [selectedDoc, setSelectedDoc] = useState<DocPreview | null>(null);
+  const [previewContent, setPreviewContent] = useState<string | null>(null);
+  const [showPreviewModal, setShowPreviewModal] = useState(false);
+  const [copiedPreview, setCopiedPreview] = useState(false);
+
   const [metrics, setMetrics] = useState<ScrapingMetrics>({
     totalPages: 0,
     completedPages: 0,
@@ -108,24 +103,24 @@ const AddPageApp = () => {
     }
   }, [debugInfo]);
 
-  // Cleanup polling timer on unmount
+  // Cleanup polling on unmount
   useEffect(() => {
     return () => {
-      if (pollTimeoutRef.current) clearTimeout(pollTimeoutRef.current);
+      if (pollTimeoutRef.current) {
+        clearTimeout(pollTimeoutRef.current);
+      }
     };
   }, []);
 
   const logAndUpdateDebug = (message: string) => {
-    const timestamp = new Date().toLocaleTimeString();
-    const formatted = `[${timestamp}] ${message}`;
-    console.log(formatted);
-    setDebugInfo(prev => `${prev ? prev + '\n' : ''}${formatted}`);
+    console.log('[DocIngest]', message);
+    setDebugInfo(prev => `${prev ? prev + '\n' : ''}${message}`);
   };
 
   const getDomain = (urlString: string) => {
     try {
-      const parsed = new URL(urlString);
-      return parsed.hostname;
+      const u = new URL(urlString);
+      return u.hostname;
     } catch {
       return 'unknown-domain';
     }
@@ -137,7 +132,7 @@ const AddPageApp = () => {
       setUrlError(null);
       return true;
     } catch {
-      setUrlError('Please enter a valid URL (e.g. https://docs.example.com)');
+      setUrlError('Please enter a valid URL (e.g., https://docs.example.com)');
       return false;
     }
   };
@@ -148,6 +143,7 @@ const AddPageApp = () => {
       else setExcludePatternError(null);
       return true;
     }
+
     try {
       new RegExp(pattern.replace(/\*/g, '.*'));
       if (type === 'include') setIncludePatternError(null);
@@ -163,8 +159,8 @@ const AddPageApp = () => {
 
   const suggestIncludePattern = (u: string): string => {
     try {
-      const parsed = new URL(u);
-      const path = parsed.pathname;
+      const urlObj = new URL(u);
+      const path = urlObj.pathname;
       if (path.includes('/docs')) {
         const docsIndex = path.indexOf('/docs');
         return path.slice(0, docsIndex) + '/docs/*';
@@ -178,256 +174,117 @@ const AddPageApp = () => {
     }
   };
 
-  const loadSavedData = async (limitCount = 6) => {
+  const handleUrlChange = (e: any) => {
+    const newUrl = e.target.value;
+    setUrl(newUrl);
+    setError(null);
+    if (!newUrl) return;
+
+    validateUrl(newUrl);
+    const suggested = suggestIncludePattern(newUrl);
+    if (suggested && !includePattern) {
+      setIncludePattern(suggested);
+    }
+  };
+
+  const loadSavedData = async (limit = 6, pageNum = 1) => {
     const API_URL = getApiUrl();
+    setnewDataLoading(true);
     try {
-      setnewDataLoading(true);
-      const res = await fetch(`${API_URL}/docs/list?page=${page}&limit=${limitCount}`);
-      if (!res.ok) throw new Error(`Failed to fetch saved docs: ${res.statusText}`);
-      const data = await res.json();
-      if (data.docs && Array.isArray(data.docs)) {
-        if (data.docs.length === 0) {
-          setNoMoreData(true);
-        } else {
-          setSavedDocs(prev => {
-            const map = new Map<string, DocPreview>();
-            [...prev, ...data.docs].forEach(d => map.set(d.domain, d));
-            return Array.from(map.values());
-          });
-          setPage(prev => prev + 1);
-        }
+      const response = await fetch(`${API_URL}/docs/list?page=${pageNum}&limit=${limit}&sortBy=newest`);
+      if (!response.ok) throw new Error('Failed to load saved docs');
+      const data = await response.json();
+      const newDocs: DocPreview[] = data.docs || [];
+      if (pageNum === 1) {
+        setSavedDocs(newDocs);
+      } else {
+        setSavedDocs(prev => {
+          const map = new Map<string, DocPreview>();
+          [...prev, ...newDocs].forEach(d => map.set(d.domain, d));
+          return Array.from(map.values());
+        });
+      }
+      if (newDocs.length < limit) {
+        setNoMoreData(true);
       }
     } catch (err: any) {
-      console.warn('Could not load saved data from API:', err.message);
+      console.error('Error loading saved docs:', err);
     } finally {
       setnewDataLoading(false);
     }
   };
 
   useEffect(() => {
-    loadSavedData(6);
+    loadSavedData(6, 1);
   }, []);
 
-  // Check URL query parameters for auto-fill and auto-start
-  useEffect(() => {
-    try {
-      const params = new URLSearchParams(window.location.search);
-      const urlParam = params.get('url');
-      const autoStart = params.get('autoStart') === 'true';
-
-      if (urlParam && !url) {
-        setUrl(urlParam);
-        const suggested = suggestIncludePattern(urlParam);
-        if (suggested) setIncludePattern(suggested);
-
-        if (autoStart && !autoStartTriggered) {
-          setAutoStartTriggered(true);
-          setTimeout(() => {
-            handleCrawl();
-          }, 300);
-        }
-      }
-    } catch (e) {
-      console.error(e);
-    }
-  }, [autoStartTriggered]);
-
-  const handleUrlChange = (e: any) => {
-    const val = e.target.value;
-    setUrl(val);
-    setError(null);
-    if (!val) return;
-
-    validateUrl(val);
-    const suggested = suggestIncludePattern(val);
-    if (suggested && !includePattern) {
-      setIncludePattern(suggested);
-    }
-  };
-
-  const pollCrawlStatus = async (id: string, domain: string, retryCount = 0) => {
-    const API_URL = getApiUrl();
-    pollAttemptsRef.current++;
-    if (pollAttemptsRef.current > maxPollAttempts) {
-      logAndUpdateDebug(`⏰ TIMEOUT: Crawl exceeded maximum duration limit.`);
-      setError('Crawl timed out. Please try again with fewer max pages.');
-      setIsCrawling(false);
-      setMetrics(prev => ({ ...prev, inProgress: false }));
-      return;
-    }
-
-    try {
-      const response = await fetch(`${API_URL}/crawl/status/${id}`);
-      if (!response.ok) {
-        if (response.status === 429) {
-          logAndUpdateDebug(`⚠️ Rate limited. Waiting 10s before retry...`);
-          pollTimeoutRef.current = setTimeout(() => pollCrawlStatus(id, domain, 0), 10000);
-          return;
-        }
-        if (retryCount < 3) {
-          logAndUpdateDebug(`⚠️ HTTP status ${response.status}. Retrying (${retryCount + 1}/3)...`);
-          pollTimeoutRef.current = setTimeout(() => pollCrawlStatus(id, domain, retryCount + 1), 4000);
-          return;
-        }
-        throw new Error(`Failed to fetch crawl status: ${response.statusText}`);
-      }
-
-      const statusData: CrawlStatusResponse = await response.json();
-      
-      const completed = statusData.completed || (statusData.data ? statusData.data.length : 0);
-      const total = statusData.total || statusData.providerTotals?.discovered || completed;
-      
-      setMetrics({
-        totalPages: total,
-        completedPages: completed,
-        failedPages: statusData.outcomes?.filter(o => o.status === 'failed').map(o => o.url) || [],
-        inProgress: statusData.status !== 'completed' && statusData.status !== 'failed'
-      });
-
-      logAndUpdateDebug(`⚡ Progress: ${completed} / ${total} pages indexed (${statusData.status})`);
-
-      if (statusData.status === 'completed') {
-        logAndUpdateDebug(`🎉 Crawl completed! Processing markdown payload...`);
-        setIsCrawling(false);
-
-        // Build save payload
-        const timestamp = new Date().toISOString();
-        const pages: DocPreview[] = (statusData.data || [])
-          .filter((item: any) => Boolean(item.markdown && item.metadata?.sourceURL))
-          .map((item: any) => ({
-            content: item.markdown || '',
-            type: item.metadata?.title || 'Unknown',
-            lastUpdated: timestamp,
-            url: item.metadata?.sourceURL,
-            domain,
-          }));
-
-        try {
-          const requestData = {
-            domain,
-            timestamp,
-            pages,
-            crawlId: id,
-            crawlOutcomes: statusData.outcomes || [],
-            providerTotals: statusData.providerTotals,
-          };
-          logAndUpdateDebug(`💾 Saving documentation (${pages.length} pages) to database & filesystem...`);
-          const saveRes = await fetch(`${API_URL}/docs/save`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(requestData)
-          });
-          const savedData = await saveRes.json().catch(() => null);
-
-          if (saveRes.ok && savedData?.success) {
-            logAndUpdateDebug(`✅ Successfully saved and indexed: ${savedData.filePath || domain}`);
-          } else {
-            logAndUpdateDebug(`ℹ️ Saved with response: ${savedData?.error || saveRes.statusText}`);
-          }
-        } catch (saveErr: any) {
-          logAndUpdateDebug(`⚠️ Failed to save docs: ${saveErr.message}`);
-        }
-
-        // Refresh saved docs catalog
-        loadSavedData(6);
-      } else if (statusData.status === 'failed') {
-        logAndUpdateDebug(`❌ Crawl job failed: ${statusData.error || 'Unknown error'}`);
-        setError(statusData.error || 'Crawl failed on server.');
-        setIsCrawling(false);
-      } else {
-        // Continue polling
-        pollTimeoutRef.current = setTimeout(() => pollCrawlStatus(id, domain, 0), 3000);
-      }
-    } catch (err: any) {
-      logAndUpdateDebug(`⚠️ Polling error: ${err.message}`);
-      if (retryCount < 3) {
-        pollTimeoutRef.current = setTimeout(() => pollCrawlStatus(id, domain, retryCount + 1), 4000);
-      } else {
-        setIsCrawling(false);
-        setError('Lost connection to crawler status service.');
-      }
-    }
-  };
-
-  const handleCrawl = async () => {
-    const API_URL = getApiUrl();
+  const handleCrawlAndDownload = async () => {
     if (!validateUrl(url) || !validatePattern(includePattern, 'include') || !validatePattern(excludePattern, 'exclude')) {
       return;
     }
 
+    const API_URL = getApiUrl();
     setIsLoading(true);
     setError(null);
     setDebugInfo(null);
-    pollAttemptsRef.current = 0;
-
     const domain = getDomain(url);
-    logAndUpdateDebug(`🚀 Initializing documentation ingestion for: ${domain}`);
+    logAndUpdateDebug(`🚀 Starting documentation download for: ${domain}`);
+
+    setMetrics({
+      totalPages: 0,
+      completedPages: 0,
+      failedPages: [],
+      inProgress: true
+    });
+
+    const requestBody = {
+      url,
+      limit: maxPages,
+      maxDepth: 5,
+      allowBackwardLinks: true,
+      ignoreQueryParameters: true,
+      ...(includePattern && { includePaths: [includePattern] }),
+      ...(excludePattern && { excludePaths: [excludePattern] }),
+      scrapeOptions: {
+        formats: ['markdown', 'html'],
+        onlyMainContent: true,
+        removeBase64Images: true,
+        blockAds: true,
+        timeout: 60000,
+        waitFor: 2000,
+        maxAge: 3600000
+      }
+    };
 
     try {
-      // Check if recently indexed
-      try {
-        const checkRes = await fetch(`${API_URL}/docs/check-domain/${encodeURIComponent(url)}`);
-        if (checkRes.ok) {
-          const checkData = await checkRes.json();
-          if (checkData.found) {
-            logAndUpdateDebug(`ℹ️ Existing documentation indexed for ${domain} (${new Date(checkData.lastUpdated).toLocaleDateString()}).`);
-          }
-        }
-      } catch (e) {
-        // Non-fatal, proceed with crawl
-      }
-
-      setMetrics({
-        totalPages: 0,
-        completedPages: 0,
-        failedPages: [],
-        inProgress: true
-      });
-
-      const requestBody = {
-        url,
-        limit: maxPages,
-        maxDepth: 5,
-        allowBackwardLinks: true,
-        ignoreQueryParameters: true,
-        ...(includePattern && { includePaths: [includePattern] }),
-        ...(excludePattern && { excludePaths: [excludePattern] }),
-        scrapeOptions: {
-          formats: ['markdown', 'html'],
-          onlyMainContent: true,
-          removeBase64Images: true,
-          blockAds: true,
-          timeout: 60000,
-          waitFor: 2000,
-          maxAge: 3600000
-        }
-      };
-
-      logAndUpdateDebug(`📡 Sending crawl request to ${API_URL}/crawl/start`);
-      const res = await fetch(`${API_URL}/crawl/start`, {
+      logAndUpdateDebug(`⚡ Dispatching crawl request to Firecrawl proxy...`);
+      const response = await fetch(`${API_URL}/crawl/start`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
         body: JSON.stringify(requestBody)
       });
 
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(`HTTP ${res.status}: ${errText}`);
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Server returned ${response.status}: ${errorText}`);
       }
 
-      const data: CrawlResponse = await res.json();
+      const data = await response.json() as CrawlResponse;
       if (!data.success || !data.id) {
-        throw new Error(data.error || 'Failed to start crawl: No task ID returned.');
+        throw new Error(data.error || 'Failed to start crawl: No job ID returned.');
       }
 
-      logAndUpdateDebug(`✅ Job queued with Task ID: ${data.id}`);
+      logAndUpdateDebug(`✅ Job registered with ID: ${data.id}. Beginning status monitoring...`);
       setIsCrawling(true);
+      pollAttemptsRef.current = 0;
       pollCrawlStatus(data.id, domain);
-
     } catch (err: any) {
-      console.error('Crawl start error:', err);
-      setError(err.message || 'Failed to initiate crawl.');
-      logAndUpdateDebug(`❌ Error: ${err.message}`);
+      console.error('Download error:', err);
+      setError(err.message || 'Failed to start download. Please try again.');
+      logAndUpdateDebug(`❌ Error: ${err.message || 'Unknown error'}`);
       setIsCrawling(false);
       setMetrics(prev => ({ ...prev, inProgress: false }));
     } finally {
@@ -435,319 +292,446 @@ const AddPageApp = () => {
     }
   };
 
+  const pollCrawlStatus = async (id: string, domain: string, retryCount = 0) => {
+    pollAttemptsRef.current++;
+    if (pollAttemptsRef.current > maxPollAttempts) {
+      logAndUpdateDebug(`⏰ Timeout: Crawl exceeded maximum duration (~25 min)`);
+      setError('Crawl timed out. Please try again with fewer pages.');
+      setIsCrawling(false);
+      setMetrics(prev => ({ ...prev, inProgress: false }));
+      return;
+    }
+
+    const API_URL = getApiUrl();
+    try {
+      const response = await fetch(`${API_URL}/crawl/status/${id}`);
+      if (!response.ok) {
+        if (response.status === 429) {
+          logAndUpdateDebug(`⚠️ Rate limited. Pausing for 15 seconds...`);
+          pollTimeoutRef.current = setTimeout(() => pollCrawlStatus(id, domain, 0), 15000);
+          return;
+        }
+        if (retryCount < 3) {
+          pollTimeoutRef.current = setTimeout(() => pollCrawlStatus(id, domain, retryCount + 1), 5000);
+          return;
+        }
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const data = await response.json() as CrawlStatusResponse;
+      const progressPercent = data.completed && data.total ? Math.round((data.completed / data.total) * 100) : 0;
+
+      if (data.status === 'scraping') {
+        logAndUpdateDebug(`📊 Ingesting: ${data.completed || 0}/${data.total || 0} pages (${progressPercent}%)`);
+      }
+
+      setMetrics(prev => ({
+        ...prev,
+        totalPages: data.total || 0,
+        completedPages: data.completed || 0,
+        failedPages: (data.outcomes || [])
+          .filter((outcome) => outcome.status !== 'valid')
+          .map((outcome) => outcome.reason ? `${outcome.url} (${outcome.reason})` : outcome.url),
+        inProgress: data.status !== 'completed' && data.status !== 'failed'
+      }));
+
+      if (data.status === 'completed') {
+        setIsCrawling(false);
+        const timestamp = new Date().toISOString();
+        const pages: DocPreview[] = (data.data || [])
+          .filter((item) => Boolean(item.markdown && item.metadata?.sourceURL))
+          .map((item) => ({
+            content: item.markdown || '',
+            type: item.metadata?.title || 'Unknown',
+            lastUpdated: timestamp,
+            url: item.metadata?.sourceURL,
+            domain,
+          }));
+
+        logAndUpdateDebug(`💾 Crawl completed! Saving ${pages.length} documents into corpus...`);
+
+        try {
+          const requestData = {
+            domain,
+            timestamp,
+            pages,
+            crawlId: id,
+            crawlOutcomes: data.outcomes || [],
+            providerTotals: data.providerTotals,
+          };
+
+          const saveResponse = await fetch(`${API_URL}/docs/save`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestData),
+          });
+
+          if (saveResponse.ok) {
+            logAndUpdateDebug(`🎉 Documentation successfully indexed and ready for MCP search!`);
+            loadSavedData(6, 1);
+          } else {
+            logAndUpdateDebug(`⚠️ Saved with warning: Server returned status ${saveResponse.status}`);
+          }
+        } catch (saveErr) {
+          console.error('Error saving docs:', saveErr);
+          logAndUpdateDebug(`⚠️ Error saving documents to database: ${saveErr}`);
+        }
+      } else if (data.status === 'failed') {
+        setIsCrawling(false);
+        setError(data.error || 'Crawl failed on server.');
+        logAndUpdateDebug(`❌ Ingestion failed: ${data.error || 'Unknown error'}`);
+      } else {
+        // Continue polling every 3.5 seconds
+        pollTimeoutRef.current = setTimeout(() => pollCrawlStatus(id, domain, 0), 3500);
+      }
+    } catch (err: any) {
+      console.error('Polling error:', err);
+      logAndUpdateDebug(`⚠️ Status poll error: ${err.message}`);
+      pollTimeoutRef.current = setTimeout(() => pollCrawlStatus(id, domain, retryCount + 1), 5000);
+    }
+  };
+
+  const handleOpenPreview = async (doc: DocPreview) => {
+    setSelectedDoc(doc);
+    setShowPreviewModal(true);
+    setPreviewContent('Loading documentation content...');
+    setCopiedPreview(false);
+
+    const API_URL = getApiUrl();
+    try {
+      const param = doc.filePath ? `path=${encodeURIComponent(doc.filePath)}` : `domain=${encodeURIComponent(doc.domain)}`;
+      const response = await fetch(`${API_URL}/docs/content?${param}`);
+      if (!response.ok) throw new Error('Failed to load content');
+      const text = await response.text();
+      setPreviewContent(text);
+    } catch (err: any) {
+      setPreviewContent(`Failed to load content: ${err.message}`);
+    }
+  };
+
+  const handleDownloadDoc = async (doc: DocPreview) => {
+    const API_URL = getApiUrl();
+    try {
+      const param = doc.filePath ? `path=${encodeURIComponent(doc.filePath)}` : `domain=${encodeURIComponent(doc.domain)}`;
+      const response = await fetch(`${API_URL}/docs/download?${param}`);
+      if (!response.ok) throw new Error('Download failed');
+      const blob = await response.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = `${doc.domain}_documentation.md`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(blobUrl);
+      document.body.removeChild(a);
+    } catch (err: any) {
+      alert(`Download error: ${err.message}`);
+    }
+  };
+
+  const handleCopyPreview = async () => {
+    if (!previewContent) return;
+    try {
+      await navigator.clipboard.writeText(previewContent);
+      setCopiedPreview(true);
+      setTimeout(() => setCopiedPreview(false), 2500);
+    } catch (err) {
+      alert('Failed to copy to clipboard');
+    }
+  };
+
   return (
-    <div className="docingest-app-container" style={{
-      marginTop: '1.5rem',
-      padding: '1.5rem',
-      backgroundColor: '#0d0914',
-      border: '1px solid #332d4a',
-      borderRadius: '8px',
-      color: '#e2e1e8',
-      fontFamily: 'inherit'
-    }}>
-      {/* Header */}
-      <div style={{ marginBottom: '1.5rem', borderBottom: '1px solid #1e1b2e', paddingBottom: '1rem' }}>
-        <h2 style={{ color: '#ffffff', margin: '0 0 0.5rem 0', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <span style={{ color: '#00ff00' }}>◈</span> DocIngest URL Ingestion Engine
-        </h2>
-        <p style={{ margin: 0, color: '#8b889c', fontSize: '0.9rem' }}>
-          Autonomous web scraper & document indexer powering the local MCP documentation server.
-        </p>
-      </div>
+    <div class="docingest-app-container">
+      {/* Main Neo-Brutalist Card */}
+      <div class="di-neo-card-wrapper">
+        <div class="di-neo-shadow"></div>
+        <div class="di-neo-card">
+          <div class="di-neo-card-inner">
+            {/* Target URL Input */}
+            <div class="di-input-group">
+              <label class="di-input-label">Target Documentation URL *</label>
+              <div class="di-input-wrapper">
+                <div class="di-neo-shadow-sm"></div>
+                <input
+                  type="url"
+                  value={url}
+                  onInput={handleUrlChange}
+                  placeholder="https://docs.docker.com/engine/"
+                  disabled={isCrawling || isLoading}
+                  class={`di-input ${urlError ? 'di-input-error' : ''}`}
+                  required
+                />
+              </div>
+              {urlError && <div class="di-error-text">{urlError}</div>}
+            </div>
 
-      {/* Main Ingestion Form */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '1rem' }}>
-        <div>
-          <label style={{ display: 'block', color: '#ffffff', fontWeight: 'bold', marginBottom: '0.4rem', fontSize: '0.9rem' }}>
-            Target Documentation URL *
-          </label>
-          <input
-            type="url"
-            value={url}
-            onInput={handleUrlChange}
-            placeholder="https://docs.docker.com/engine/"
-            disabled={isCrawling || isLoading}
-            style={{
-              width: '100%',
-              padding: '0.75rem 1rem',
-              backgroundColor: '#1e1b2e',
-              border: urlError ? '1px solid #ef4444' : '1px solid #332d4a',
-              borderRadius: '4px',
-              color: '#ffffff',
-              fontFamily: 'inherit',
-              boxSizing: 'border-box'
-            }}
-          />
-          {urlError && <div style={{ color: '#ef4444', fontSize: '0.8rem', marginTop: '0.3rem' }}>{urlError}</div>}
-        </div>
+            {/* Ingestion Settings Grid */}
+            <div class="di-grid-3">
+              {/* Include Path */}
+              <div class="di-input-group">
+                <label class="di-input-label">Include files under:</label>
+                <div class="di-input-wrapper">
+                  <div class="di-neo-shadow-sm"></div>
+                  <input
+                    type="text"
+                    value={includePattern}
+                    onInput={(e: any) => { setIncludePattern(e.target.value); validatePattern(e.target.value, 'include'); }}
+                    placeholder="/docs/*"
+                    disabled={isCrawling || isLoading}
+                    class={`di-input ${includePatternError ? 'di-input-error' : ''}`}
+                  />
+                </div>
+                <span class="di-input-hint">Only crawl URLs starting with this path</span>
+                {includePatternError && <div class="di-error-text">{includePatternError}</div>}
+              </div>
 
-        {/* Pattern filters & limits */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
-          <div>
-            <label style={{ display: 'block', color: '#8b889c', marginBottom: '0.4rem', fontSize: '0.85rem' }}>
-              Include Pattern (Wildcards: *)
-            </label>
-            <input
-              type="text"
-              value={includePattern}
-              onInput={(e: any) => { setIncludePattern(e.target.value); validatePattern(e.target.value, 'include'); }}
-              placeholder="/engine/*"
-              disabled={isCrawling || isLoading}
-              style={{
-                width: '100%',
-                padding: '0.6rem 0.8rem',
-                backgroundColor: '#1e1b2e',
-                border: includePatternError ? '1px solid #ef4444' : '1px solid #332d4a',
-                borderRadius: '4px',
-                color: '#ffffff',
-                fontFamily: 'inherit',
-                boxSizing: 'border-box'
-              }}
-            />
-          </div>
+              {/* Exclude Path */}
+              <div class="di-input-group">
+                <label class="di-input-label">Exclude files under:</label>
+                <div class="di-input-wrapper">
+                  <div class="di-neo-shadow-sm"></div>
+                  <input
+                    type="text"
+                    value={excludePattern}
+                    onInput={(e: any) => { setExcludePattern(e.target.value); validatePattern(e.target.value, 'exclude'); }}
+                    placeholder="/api/*, /internal/*"
+                    disabled={isCrawling || isLoading}
+                    class={`di-input ${excludePatternError ? 'di-input-error' : ''}`}
+                  />
+                </div>
+                <span class="di-input-hint">Skip URLs matching these wildcards</span>
+                {excludePatternError && <div class="di-error-text">{excludePatternError}</div>}
+              </div>
 
-          <div>
-            <label style={{ display: 'block', color: '#8b889c', marginBottom: '0.4rem', fontSize: '0.85rem' }}>
-              Exclude Pattern
-            </label>
-            <input
-              type="text"
-              value={excludePattern}
-              onInput={(e: any) => { setExcludePattern(e.target.value); validatePattern(e.target.value, 'exclude'); }}
-              placeholder="*/changelog*, */v1/*"
-              disabled={isCrawling || isLoading}
-              style={{
-                width: '100%',
-                padding: '0.6rem 0.8rem',
-                backgroundColor: '#1e1b2e',
-                border: excludePatternError ? '1px solid #ef4444' : '1px solid #332d4a',
-                borderRadius: '4px',
-                color: '#ffffff',
-                fontFamily: 'inherit',
-                boxSizing: 'border-box'
-              }}
-            />
-          </div>
-
-          <div>
-            <label style={{ display: 'block', color: '#8b889c', marginBottom: '0.4rem', fontSize: '0.85rem' }}>
-              Max Pages Cap
-            </label>
-            <input
-              type="number"
-              value={maxPages}
-              onInput={(e: any) => setMaxPages(parseInt(e.target.value) || 50)}
-              min="1"
-              max="1000"
-              disabled={isCrawling || isLoading}
-              style={{
-                width: '100%',
-                padding: '0.6rem 0.8rem',
-                backgroundColor: '#1e1b2e',
-                border: '1px solid #332d4a',
-                borderRadius: '4px',
-                color: '#ffffff',
-                fontFamily: 'inherit',
-                boxSizing: 'border-box'
-              }}
-            />
-          </div>
-        </div>
-
-        {/* Action Button */}
-        <div style={{ marginTop: '0.5rem' }}>
-          <button
-            onClick={handleCrawl}
-            disabled={isLoading || isCrawling || !url}
-            style={{
-              backgroundColor: isCrawling ? '#b026ff' : '#00ff00',
-              color: '#000000',
-              fontWeight: 'bold',
-              padding: '0.75rem 1.75rem',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: (isLoading || isCrawling || !url) ? 'not-allowed' : 'pointer',
-              opacity: (isLoading || isCrawling || !url) ? 0.6 : 1,
-              transition: 'all 0.2s ease',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '0.5rem'
-            }}
-          >
-            {isCrawling ? (
-              <span>⏳ Crawling & Ingesting ({metrics.completedPages}/{metrics.totalPages || '?'})...</span>
-            ) : isLoading ? (
-              <span>Initializing Request...</span>
-            ) : (
-              <span>⚡ Start Documentation Ingestion</span>
-            )}
-          </button>
-        </div>
-      </div>
-
-      {/* Error Banner */}
-      {error && (
-        <div style={{
-          marginTop: '1.25rem',
-          padding: '0.75rem 1rem',
-          backgroundColor: 'rgba(239, 68, 68, 0.15)',
-          border: '1px solid rgba(239, 68, 68, 0.4)',
-          borderRadius: '4px',
-          color: '#f87171'
-        }}>
-          ⚠️ {error}
-        </div>
-      )}
-
-      {/* Progress & Metrics Dashboard */}
-      {(isCrawling || metrics.completedPages > 0) && (
-        <div style={{
-          marginTop: '1.5rem',
-          padding: '1rem',
-          backgroundColor: '#1e1b2e',
-          border: '1px solid #332d4a',
-          borderRadius: '6px'
-        }}>
-          <h4 style={{ margin: '0 0 0.5rem 0', color: '#ffffff', fontSize: '0.95rem' }}>
-            Ingestion Progress
-          </h4>
-          <div style={{ display: 'flex', gap: '1.5rem', fontSize: '0.85rem', color: '#8b889c', marginBottom: '0.75rem' }}>
-            <div>Discovered: <strong style={{ color: '#ffffff' }}>{metrics.totalPages}</strong></div>
-            <div>Completed: <strong style={{ color: '#00ff00' }}>{metrics.completedPages}</strong></div>
-            <div>Failed: <strong style={{ color: metrics.failedPages.length ? '#ef4444' : '#ffffff' }}>{metrics.failedPages.length}</strong></div>
-          </div>
-          {/* Progress Bar */}
-          <div style={{ width: '100%', height: '8px', backgroundColor: '#0d0914', borderRadius: '4px', overflow: 'hidden' }}>
-            <div style={{
-              width: `${metrics.totalPages > 0 ? Math.min(100, Math.round((metrics.completedPages / metrics.totalPages) * 100)) : (isCrawling ? 30 : 0)}%`,
-              height: '100%',
-              backgroundColor: '#00ff00',
-              transition: 'width 0.3s ease'
-            }} />
-          </div>
-        </div>
-      )}
-
-      {/* Real-time Telemetry / Debug Log */}
-      {debugInfo && (
-        <div style={{ marginTop: '1.5rem' }}>
-          <div style={{ fontSize: '0.85rem', color: '#8b889c', marginBottom: '0.3rem' }}>Operational Telemetry Log:</div>
-          <div
-            ref={debugLogRef}
-            style={{
-              maxHeight: '180px',
-              overflowY: 'auto',
-              backgroundColor: '#050308',
-              border: '1px solid #1e1b2e',
-              padding: '0.75rem',
-              borderRadius: '4px',
-              fontFamily: 'monospace',
-              fontSize: '0.8rem',
-              color: '#00ff00',
-              whiteSpace: 'pre-wrap'
-            }}
-          >
-            {debugInfo}
-          </div>
-        </div>
-      )}
-
-      {/* Saved Documentation Corpus Grid */}
-      {savedDocs.length > 0 && (
-        <div style={{ marginTop: '2.5rem', borderTop: '1px solid #1e1b2e', paddingTop: '1.5rem' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-            <h3 style={{ margin: 0, color: '#ffffff', fontSize: '1.1rem' }}>
-              ◈ Indexed Documentation Repositories
-            </h3>
-            <a
-              href="/Software-&-Github/Tools/DocIngest/view"
-              style={{ color: '#00ff00', fontSize: '0.85rem', textDecoration: 'none' }}
-            >
-              Browse Full Corpus Viewer →
-            </a>
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '1rem' }}>
-            {savedDocs.map((doc, idx) => (
-              <div
-                key={idx}
-                style={{
-                  backgroundColor: '#1e1b2e',
-                  border: '1px solid #332d4a',
-                  borderRadius: '6px',
-                  padding: '1rem',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  justifyContent: 'space-between',
-                  gap: '0.75rem'
-                }}
-              >
-                <div>
-                  <div style={{ color: '#ffffff', fontWeight: 'bold', fontSize: '0.95rem', wordBreak: 'break-all' }}>
-                    {doc.domain}
+              {/* Max Pages Slider */}
+              <div class="di-input-group">
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <label class="di-input-label">Max Pages:</label>
+                  <span style={{ fontWeight: 800, color: 'var(--secondary, #00afaf)' }}>{maxPages}</span>
+                </div>
+                <div class="di-range-wrapper">
+                  <div class="di-range-track">
+                    <div class="di-range-fill" style={{ width: `${(maxPages / 1000) * 100}%` }}></div>
                   </div>
-                  <div style={{ color: '#8b889c', fontSize: '0.8rem', marginTop: '0.3rem' }}>
-                    Indexed: {new Date(doc.lastUpdated).toLocaleDateString()}
+                  <input
+                    type="range"
+                    min="10"
+                    max="1000"
+                    step="25"
+                    value={maxPages}
+                    onInput={(e: any) => setMaxPages(Number(e.target.value))}
+                    disabled={isCrawling || isLoading}
+                    class="di-range-input"
+                  />
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginTop: '0.4rem', color: 'var(--gray, #8b889c)', fontWeight: 600 }}>
+                    <span>10</span>
+                    <span>500</span>
+                    <span>1000</span>
                   </div>
                 </div>
+              </div>
+            </div>
 
-                <div style={{ display: 'flex', gap: '0.5rem' }}>
-                  <a
-                    href={`/Software-&-Github/Tools/DocIngest/view?search=${encodeURIComponent(doc.domain)}`}
-                    style={{
-                      display: 'inline-block',
-                      backgroundColor: 'rgba(0, 255, 0, 0.1)',
-                      color: '#00ff00',
-                      border: '1px solid rgba(0, 255, 0, 0.3)',
-                      padding: '0.35rem 0.75rem',
-                      borderRadius: '4px',
-                      fontSize: '0.8rem',
-                      textDecoration: 'none'
-                    }}
-                  >
-                    Inspect Docs
-                  </a>
+            {/* Submit Button */}
+            <div style={{ marginTop: '0.5rem' }}>
+              <button
+                onClick={handleCrawlAndDownload}
+                disabled={isLoading || isCrawling || !url}
+                class="di-btn di-btn-primary di-btn-full"
+                style={{ padding: '1rem 1.5rem', fontSize: '1.05rem' }}
+              >
+                {isCrawling ? (
+                  <>
+                    <span class="di-spinner"></span>
+                    <span>Indexing Documentation ({metrics.completedPages}/{metrics.totalPages || '...'} pages)...</span>
+                  </>
+                ) : (
+                  <span>Start Indexing</span>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Crawl Progress Bar */}
+      {metrics.inProgress && (
+        <div class="di-neo-card-wrapper">
+          <div class="di-neo-shadow"></div>
+          <div class="di-progress-container">
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, color: 'var(--secondary, #00afaf)' }}>
+              <span>Indexing in progress: {metrics.completedPages}/{metrics.totalPages} pages</span>
+              <span>{metrics.totalPages > 0 ? Math.round((metrics.completedPages / metrics.totalPages) * 100) : 0}%</span>
+            </div>
+            <div class="di-progress-bar-bg">
+              <div
+                class="di-progress-bar-fill"
+                style={{ width: `${metrics.totalPages > 0 ? (metrics.completedPages / metrics.totalPages) * 100 : 5}%` }}
+              ></div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Error Alert */}
+      {error && (
+        <div style={{ backgroundColor: 'rgba(239, 68, 68, 0.15)', border: '2px solid #ef4444', borderRadius: '0.5rem', padding: '1rem', color: '#fca5a5', marginBottom: '1.5rem', fontWeight: 600 }}>
+          {error}
+        </div>
+      )}
+
+      {/* Debug & Status Output Terminal */}
+      {debugInfo && (
+        <div class="di-terminal-box">
+          <div class="di-terminal-header">
+            <span>Processing Log & Outcomes</span>
+            <button
+              onClick={() => setDebugInfo(null)}
+              style={{ background: 'none', border: 'none', color: 'var(--gray, #8b889c)', cursor: 'pointer', fontSize: '0.75rem' }}
+            >
+              Clear Log
+            </button>
+          </div>
+          <div ref={debugLogRef} style={{ maxHeight: '180px', overflowY: 'auto' }}>
+            <pre style={{ margin: 0, fontFamily: 'inherit', whiteSpace: 'pre-wrap' }}>{debugInfo}</pre>
+          </div>
+        </div>
+      )}
+
+      {/* Saved / Indexed Documentation Section */}
+      <div style={{ marginTop: '2.5rem' }}>
+        <h2 style={{ fontSize: '1.6rem', fontWeight: 800, marginBottom: '1.25rem', color: 'var(--dark, #ffffff)' }}>
+          Recent Ingestions
+        </h2>
+
+        {savedDocs.length === 0 && !newDataLoading ? (
+          <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--gray, #8b889c)', border: '2px dashed var(--gray, #8b889c)', borderRadius: '0.5rem' }}>
+            No documentation saved yet. Submit a URL above to index your first doc set.
+          </div>
+        ) : (
+          <div class="di-grid-2">
+            {savedDocs.map((doc, idx) => (
+              <div key={idx} class="di-neo-card-wrapper">
+                <div class="di-neo-shadow"></div>
+                <div class="di-neo-card di-doc-card">
+                  <div>
+                    <h3 class="di-doc-title">{doc.type || doc.domain}</h3>
+                    <div class="di-doc-meta">
+                      <div><strong>Domain:</strong> {doc.domain}</div>
+                      <div><strong>Indexed:</strong> {new Date(doc.lastUpdated).toLocaleDateString()}</div>
+                      {doc.url && (
+                        <div>
+                          <a
+                            href={doc.url.startsWith('http') ? doc.url : `https://${doc.url}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{ color: 'var(--secondary, #00afaf)', textDecoration: 'none', fontWeight: 600 }}
+                          >
+                            View Source ↗
+                          </a>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div class="di-doc-actions">
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+                      <button
+                        onClick={() => handleOpenPreview(doc)}
+                        class="di-btn di-btn-secondary"
+                      >
+                        Preview
+                      </button>
+                      <button
+                        onClick={() => handleDownloadDoc(doc)}
+                        class="di-btn di-btn-primary"
+                      >
+                        Download
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
             ))}
           </div>
+        )}
 
-          {!noMoreData && (
-            <div style={{ textAlign: 'center', marginTop: '1.25rem' }}>
+        {/* Load More Button */}
+        {!noMoreData && savedDocs.length > 0 && (
+          <div style={{ textAlign: 'center', marginTop: '1.5rem' }}>
+            <button
+              onClick={() => {
+                const nextPage = page + 1;
+                setPage(nextPage);
+                loadSavedData(6, nextPage);
+              }}
+              disabled={newDataLoading}
+              class="di-btn di-btn-primary"
+            >
+              {newDataLoading ? (
+                <>
+                  <span class="di-spinner"></span>
+                  <span>Loading...</span>
+                </>
+              ) : (
+                <span>Load More</span>
+              )}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Markdown Document Preview Modal */}
+      {showPreviewModal && (
+        <div class="di-modal-backdrop" onClick={() => setShowPreviewModal(false)}>
+          <div class="di-modal-dialog" onClick={(e) => e.stopPropagation()}>
+            <div class="di-modal-header">
+              <h3 class="di-modal-title">
+                {selectedDoc?.type || selectedDoc?.domain} — Documentation Preview
+              </h3>
               <button
-                onClick={() => loadSavedData(6)}
-                disabled={newDataLoading}
-                style={{
-                  backgroundColor: '#1e1b2e',
-                  color: '#e2e1e8',
-                  border: '1px solid #332d4a',
-                  padding: '0.5rem 1.25rem',
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                  fontSize: '0.85rem'
-                }}
+                onClick={() => setShowPreviewModal(false)}
+                style={{ background: 'none', border: 'none', fontSize: '1.5rem', cursor: 'pointer', fontWeight: 700, color: 'var(--dark, #ffffff)' }}
               >
-                {newDataLoading ? 'Loading...' : 'Load More Indexed Repositories'}
+                ✕
               </button>
             </div>
-          )}
+            <div class="di-modal-body">
+              <pre style={{ margin: 0, fontFamily: 'inherit', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                {previewContent}
+              </pre>
+            </div>
+            <div class="di-modal-footer">
+              <button
+                onClick={handleCopyPreview}
+                class="di-btn di-btn-secondary"
+              >
+                {copiedPreview ? '✓ Copied!' : 'Copy Markdown'}
+              </button>
+              <button
+                onClick={() => selectedDoc && handleDownloadDoc(selectedDoc)}
+                class="di-btn di-btn-primary"
+              >
+                Download File
+              </button>
+              <button
+                onClick={() => setShowPreviewModal(false)}
+                class="di-btn di-btn-neutral"
+              >
+                Close
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
   );
 };
 
-// Mount the app on Quartz navigation
-const mountAddApp = () => {
-  const root = document.getElementById('docingest-add-root');
-  if (root) {
-    render(<AddPageApp />, root);
-  }
-};
-
-document.addEventListener('nav', mountAddApp);
-if (document.readyState === 'complete' || document.readyState === 'interactive') {
-  mountAddApp();
+// Automatic hydration mounting on target DOM container
+const rootElement = document.getElementById('docingest-add-root');
+if (rootElement) {
+  render(<AddPageApp />, rootElement);
 }
 
-export default "";
+export default AddPageApp;

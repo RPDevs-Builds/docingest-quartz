@@ -7,11 +7,12 @@ interface DocStructure {
 }
 
 interface DocPreview {
+  type?: string;
   domain: string;
   lastUpdated: string;
   url?: string;
   filePath?: string | null;
-  structure: DocStructure[];
+  structure?: DocStructure[];
 }
 
 const getApiUrl = () => {
@@ -19,11 +20,6 @@ const getApiUrl = () => {
     return (window as any).__DOCINGEST_API_URL__ || (window as any).DOCINGEST_API_URL || 'https://docingest.iamrp.dev/api';
   }
   return 'https://docingest.iamrp.dev/api';
-};
-
-const getPrimaryDomain = (domain: string) => {
-  const cleanDomain = domain.replace(/^docs\./, '').replace(/\.ai$/, '');
-  return cleanDomain.charAt(0).toUpperCase() + cleanDomain.slice(1);
 };
 
 const ViewPageApp = () => {
@@ -36,18 +32,21 @@ const ViewPageApp = () => {
   const [isFetchingMore, setIsFetchingMore] = useState(false);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
-  const [copiedDomain, setCopiedDomain] = useState<string | null>(null);
-  const [previewContent, setPreviewContent] = useState<string | null>(null);
-  const [previewDomain, setPreviewDomain] = useState<string | null>(null);
 
-  // Check URL query params on mount
+  const [copiedDomain, setCopiedDomain] = useState<string | null>(null);
+  const [selectedDoc, setSelectedDoc] = useState<DocPreview | null>(null);
+  const [previewContent, setPreviewContent] = useState<string | null>(null);
+  const [showPreviewModal, setShowPreviewModal] = useState(false);
+  const [copiedPreview, setCopiedPreview] = useState(false);
+
+  // Sync with search URL parameters if present
   useEffect(() => {
     try {
       const params = new URLSearchParams(window.location.search);
-      const searchParam = params.get('search') || params.get('q') || params.get('domain');
-      if (searchParam) {
-        setSearchTerm(searchParam);
-        setSearchQuery(searchParam);
+      const query = params.get('search') || params.get('q') || params.get('domain');
+      if (query) {
+        setSearchTerm(query);
+        setSearchQuery(query);
       }
     } catch (e) {
       console.error(e);
@@ -59,14 +58,15 @@ const ViewPageApp = () => {
     if (isInitial) {
       setIsLoading(true);
     }
+    setError(null);
     try {
-      const endpoint = searchQuery 
+      const endpoint = searchQuery
         ? `${API_URL}/docs/fullsearch?q=${encodeURIComponent(searchQuery)}&page=${page}&sortBy=newest`
-        : `${API_URL}/docs/list?page=${page}&sortBy=newest`;
+        : `${API_URL}/docs/list?page=${page}&limit=8&sortBy=newest`;
 
       const response = await fetch(endpoint);
-      if (!response.ok) throw new Error(`Failed to fetch documentation (${response.status})`);
-      
+      if (!response.ok) throw new Error(`Server returned ${response.status}: ${response.statusText}`);
+
       const data = await response.json();
       const newDocs: DocPreview[] = data.docs || [];
 
@@ -77,7 +77,7 @@ const ViewPageApp = () => {
         return Array.from(map.values());
       });
 
-      setHasMore(newDocs.length > 0 && newDocs.length >= 10);
+      setHasMore(newDocs.length >= 8);
     } catch (err: any) {
       console.error('Fetch error:', err);
       setError(err.message || 'Failed to load documentation corpus.');
@@ -92,10 +92,10 @@ const ViewPageApp = () => {
     fetchDocs(page === 1);
   }, [fetchDocs]);
 
-  const handleSubmit = (e: any) => {
-    e.preventDefault();
+  const handleSearchSubmit = (e?: any) => {
+    if (e && e.preventDefault) e.preventDefault();
     setIsSearching(true);
-    setSearchQuery(searchTerm);
+    setSearchQuery(searchTerm.trim());
     setPage(1);
   };
 
@@ -106,31 +106,27 @@ const ViewPageApp = () => {
     }
   };
 
-  const handleCopy = async (doc: DocPreview) => {
+  const handleCopyContent = async (doc: DocPreview) => {
     const API_URL = getApiUrl();
     try {
-      if (!doc.filePath && !doc.domain) throw new Error('File path not available');
       const param = doc.filePath ? `path=${encodeURIComponent(doc.filePath)}` : `domain=${encodeURIComponent(doc.domain)}`;
       const response = await fetch(`${API_URL}/docs/content?${param}`);
-      if (!response.ok) throw new Error('Failed to fetch content from API');
-      
-      const content = await response.text();
-      await navigator.clipboard.writeText(content);
+      if (!response.ok) throw new Error('Failed to fetch content');
+      const text = await response.text();
+      await navigator.clipboard.writeText(text);
       setCopiedDomain(doc.domain);
-      setTimeout(() => setCopiedDomain(null), 3000);
+      setTimeout(() => setCopiedDomain(null), 2500);
     } catch (err: any) {
-      console.error('Copy error:', err);
       alert(`Copy failed: ${err.message}`);
     }
   };
 
-  const handleDownload = async (doc: DocPreview) => {
+  const handleDownloadDoc = async (doc: DocPreview) => {
     const API_URL = getApiUrl();
     try {
       const param = doc.filePath ? `path=${encodeURIComponent(doc.filePath)}` : `domain=${encodeURIComponent(doc.domain)}`;
       const response = await fetch(`${API_URL}/docs/download?${param}`);
-      if (!response.ok) throw new Error('Failed to download file');
-      
+      if (!response.ok) throw new Error('Download failed');
       const blob = await response.blob();
       const blobUrl = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -141,336 +137,222 @@ const ViewPageApp = () => {
       window.URL.revokeObjectURL(blobUrl);
       document.body.removeChild(a);
     } catch (err: any) {
-      console.error('Download error:', err);
       alert(`Download failed: ${err.message}`);
     }
   };
 
-  const handlePreview = async (doc: DocPreview) => {
+  const handleOpenPreview = async (doc: DocPreview) => {
+    setSelectedDoc(doc);
+    setShowPreviewModal(true);
+    setPreviewContent('Loading full markdown documentation...');
+    setCopiedPreview(false);
+
     const API_URL = getApiUrl();
     try {
       const param = doc.filePath ? `path=${encodeURIComponent(doc.filePath)}` : `domain=${encodeURIComponent(doc.domain)}`;
       const response = await fetch(`${API_URL}/docs/content?${param}`);
-      if (!response.ok) throw new Error('Failed to fetch content');
+      if (!response.ok) throw new Error('Failed to load content');
       const text = await response.text();
-      setPreviewContent(text.slice(0, 10000) + (text.length > 10000 ? '\n\n...[Content truncated for preview]...' : ''));
-      setPreviewDomain(doc.domain);
+      setPreviewContent(text);
     } catch (err: any) {
-      alert(`Preview failed: ${err.message}`);
+      setPreviewContent(`Failed to load content: ${err.message}`);
+    }
+  };
+
+  const handleCopyPreview = async () => {
+    if (!previewContent) return;
+    try {
+      await navigator.clipboard.writeText(previewContent);
+      setCopiedPreview(true);
+      setTimeout(() => setCopiedPreview(false), 2500);
+    } catch (err) {
+      alert('Failed to copy to clipboard');
     }
   };
 
   return (
-    <div className="docingest-view-container" style={{
-      marginTop: '1.5rem',
-      padding: '1.5rem',
-      backgroundColor: '#0d0914',
-      border: '1px solid #332d4a',
-      borderRadius: '8px',
-      color: '#e2e1e8',
-      fontFamily: 'inherit'
-    }}>
-      {/* Header */}
-      <div style={{ marginBottom: '1.5rem', borderBottom: '1px solid #1e1b2e', paddingBottom: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem' }}>
-        <div>
-          <h2 style={{ color: '#ffffff', margin: '0 0 0.5rem 0', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <span style={{ color: '#00ff00' }}>◈</span> Searchable Documentation Corpus
-          </h2>
-          <p style={{ margin: 0, color: '#8b889c', fontSize: '0.9rem' }}>
-            Query, inspect, copy, or download canonical documentation scraped and formatted for AI context ingestion.
-          </p>
-        </div>
-        <div>
-          <a
-            href="/Software-&-Github/Tools/DocIngest/add"
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '0.4rem',
-              backgroundColor: '#00ff00',
-              color: '#000000',
-              fontWeight: 'bold',
-              padding: '0.5rem 1rem',
-              borderRadius: '4px',
-              textDecoration: 'none',
-              fontSize: '0.85rem'
-            }}
-          >
-            + Ingest New URL
-          </a>
-        </div>
-      </div>
-
-      {/* Search Form */}
-      <form onSubmit={handleSubmit} style={{ marginBottom: '1.5rem' }}>
-        <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+    <div class="docingest-app-container">
+      {/* Search Input Form */}
+      <form onSubmit={handleSearchSubmit} class="di-search-container">
+        <div class="di-input-wrapper" style={{ flex: 1 }}>
+          <div class="di-neo-shadow" style={{ pointerEvents: 'none' }}></div>
           <input
             type="text"
-            placeholder="Filter by library or domain (e.g. react, docker, tailwind, openwrt)..."
+            placeholder="Search indexed documentation corpus..."
             value={searchTerm}
             onInput={(e: any) => setSearchTerm(e.target.value)}
-            style={{
-              flex: '1 1 280px',
-              padding: '0.75rem 1rem',
-              backgroundColor: '#1e1b2e',
-              border: '1px solid #332d4a',
-              borderRadius: '4px',
-              color: '#ffffff',
-              fontFamily: 'inherit',
-              fontSize: '0.9rem'
-            }}
+            class="di-input"
+            style={{ padding: '0.9rem 1.1rem', fontSize: '0.95rem' }}
           />
+        </div>
+        <div class="di-input-wrapper" style={{ width: 'auto' }}>
+          <div class="di-neo-shadow" style={{ pointerEvents: 'none' }}></div>
           <button
             type="submit"
+            onClick={handleSearchSubmit}
             disabled={isSearching}
-            style={{
-              backgroundColor: '#b026ff',
-              color: '#ffffff',
-              fontWeight: 'bold',
-              padding: '0.75rem 1.5rem',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              fontSize: '0.9rem'
-            }}
+            class="di-btn di-btn-primary"
+            style={{ height: '100%', padding: '0.9rem 1.5rem', fontSize: '0.95rem', minWidth: '120px', position: 'relative', zIndex: 2 }}
           >
-            {isSearching ? 'Searching...' : 'Search'}
+            {isSearching ? (
+              <>
+                <span class="di-spinner"></span>
+                <span>Searching...</span>
+              </>
+            ) : (
+              <span>Search</span>
+            )}
           </button>
-          {searchQuery && (
-            <button
-              type="button"
-              onClick={() => { setSearchTerm(''); setSearchQuery(''); setPage(1); }}
-              style={{
-                backgroundColor: '#1e1b2e',
-                color: '#8b889c',
-                border: '1px solid #332d4a',
-                padding: '0.75rem 1rem',
-                borderRadius: '4px',
-                cursor: 'pointer',
-                fontSize: '0.9rem'
-              }}
-            >
-              Clear
-            </button>
-          )}
         </div>
       </form>
 
       {/* Error Message */}
       {error && (
-        <div style={{
-          padding: '0.75rem 1rem',
-          backgroundColor: 'rgba(239, 68, 68, 0.15)',
-          border: '1px solid rgba(239, 68, 68, 0.4)',
-          borderRadius: '4px',
-          color: '#f87171',
-          marginBottom: '1.5rem'
-        }}>
-          ⚠️ {error}
+        <div style={{ backgroundColor: '#fef2f2', border: '2px solid #ef4444', borderRadius: '0.5rem', padding: '1rem', color: '#b91c1c', marginBottom: '1.5rem', fontWeight: 600 }}>
+          {error}
         </div>
       )}
 
-      {/* Loading state */}
+      {/* Loading Skeleton */}
       {isLoading && docs.length === 0 && (
-        <div style={{ textAlign: 'center', padding: '2.5rem 0', color: '#8b889c' }}>
-          <div style={{ fontSize: '1.5rem', marginBottom: '0.5rem' }}>⏳</div>
-          Loading documentation corpus from DocIngest API...
+        <div style={{ textAlign: 'center', padding: '3rem 1rem', color: 'var(--di-text-muted)' }}>
+          <div class="di-spinner di-spinner-primary" style={{ width: '2.5rem', height: '2.5rem', marginBottom: '1rem' }}></div>
+          <p style={{ fontWeight: 600 }}>Loading documentation corpus...</p>
         </div>
       )}
 
-      {/* Empty Search Result */}
-      {!isLoading && docs.length === 0 && (
-        <div style={{ textAlign: 'center', padding: '2.5rem 0', color: '#8b889c' }}>
-          <p>No documentation found matching "<strong>{searchQuery}</strong>".</p>
-          <p style={{ fontSize: '0.85rem' }}>
-            Try a different search term or <a href="/Software-&-Github/Tools/DocIngest/add" style={{ color: '#00ff00' }}>ingest this URL now</a>.
-          </p>
+      {/* Documentation Cards Grid */}
+      {!isLoading && docs.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: '3rem 1rem', color: 'var(--di-text-muted)', border: '2px dashed var(--di-border)', borderRadius: '0.5rem' }}>
+          No documentation found matching your search. Try a different query or index a new URL.
         </div>
-      )}
-
-      {/* Documentation Card Grid */}
-      {docs.length > 0 && (
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
-          gap: '1.25rem'
-        }}>
-          {docs.map((doc, idx) => (
-            <div
-              key={idx}
-              style={{
-                backgroundColor: '#1e1b2e',
-                border: '1px solid #332d4a',
-                borderRadius: '6px',
-                padding: '1.25rem',
-                display: 'flex',
-                flexDirection: 'column',
-                justifyContent: 'space-between',
-                gap: '1rem',
-                transition: 'border-color 0.2s'
-              }}
-            >
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-                  <h3 style={{ margin: 0, color: '#ffffff', fontSize: '1.1rem' }}>
-                    {getPrimaryDomain(doc.domain)}
-                  </h3>
-                  <span style={{
-                    fontSize: '0.75rem',
-                    backgroundColor: 'rgba(176, 38, 255, 0.15)',
-                    color: '#b026ff',
-                    padding: '0.2rem 0.5rem',
-                    borderRadius: '4px',
-                    border: '1px solid rgba(176, 38, 255, 0.3)'
-                  }}>
-                    {doc.structure ? `${doc.structure.length} Sections` : 'Markdown Corpus'}
-                  </span>
+      ) : (
+        <div class="di-grid-2">
+          {docs.map((doc, index) => (
+            <div key={index} class="di-neo-card-wrapper">
+              <div class="di-neo-shadow"></div>
+              <div class="di-neo-card di-doc-card">
+                <div>
+                  <h3 class="di-doc-title">{doc.type || doc.domain}</h3>
+                  <div class="di-doc-meta">
+                    <div><strong>Domain:</strong> {doc.domain}</div>
+                    {doc.structure && doc.structure.length > 0 && (
+                      <div><strong>Sections:</strong> {doc.structure.length} indexed pages</div>
+                    )}
+                    <div>
+                      <strong>Saved:</strong> {(() => {
+                        const d = doc.lastUpdated || (doc as any).lastScraped;
+                        if (!d) return 'Recent';
+                        try {
+                          return new Date(d).toLocaleDateString('en-GB');
+                        } catch {
+                          return 'Recent';
+                        }
+                      })()}
+                    </div>
+                    {doc.url && (
+                      <div style={{ marginTop: '0.25rem' }}>
+                        <a
+                          href={doc.url.startsWith('http') ? doc.url : `https://${doc.url}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{ color: 'var(--di-primary)', textDecoration: 'none', fontWeight: 600, fontSize: '0.85rem' }}
+                        >
+                          View Original Source ↗
+                        </a>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
-                <div style={{ color: '#8b889c', fontSize: '0.85rem', wordBreak: 'break-all', marginBottom: '0.5rem' }}>
-                  <strong>Domain:</strong> {doc.domain}
+                <div class="di-doc-actions">
+                  <button
+                    onClick={() => handleOpenPreview(doc)}
+                    class="di-btn di-btn-secondary di-btn-full"
+                  >
+                    Preview Documentation
+                  </button>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+                    <button
+                      onClick={() => handleCopyContent(doc)}
+                      class="di-btn di-btn-neutral"
+                    >
+                      {copiedDomain === doc.domain ? '✓ Copied!' : 'Copy All'}
+                    </button>
+                    <button
+                      onClick={() => handleDownloadDoc(doc)}
+                      class="di-btn di-btn-primary"
+                    >
+                      Download
+                    </button>
+                  </div>
                 </div>
-
-                <div style={{ color: '#767676', fontSize: '0.8rem' }}>
-                  <strong>Indexed:</strong> {new Date(doc.lastUpdated).toLocaleDateString()}
-                </div>
-              </div>
-
-              {/* Action Buttons */}
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', paddingTop: '0.75rem', borderTop: '1px solid #28243d' }}>
-                <button
-                  onClick={() => handleCopy(doc)}
-                  style={{
-                    backgroundColor: copiedDomain === doc.domain ? '#00ff00' : 'rgba(0, 255, 0, 0.1)',
-                    color: copiedDomain === doc.domain ? '#000000' : '#00ff00',
-                    border: '1px solid rgba(0, 255, 0, 0.3)',
-                    padding: '0.4rem 0.75rem',
-                    borderRadius: '4px',
-                    fontSize: '0.8rem',
-                    fontWeight: 'bold',
-                    cursor: 'pointer',
-                    transition: 'all 0.2s'
-                  }}
-                >
-                  {copiedDomain === doc.domain ? '✓ Copied Markdown' : '📋 Copy Context'}
-                </button>
-
-                <button
-                  onClick={() => handleDownload(doc)}
-                  style={{
-                    backgroundColor: 'rgba(95, 175, 215, 0.1)',
-                    color: '#5fafd7',
-                    border: '1px solid rgba(95, 175, 215, 0.3)',
-                    padding: '0.4rem 0.75rem',
-                    borderRadius: '4px',
-                    fontSize: '0.8rem',
-                    cursor: 'pointer'
-                  }}
-                >
-                  💾 Download .md
-                </button>
-
-                <button
-                  onClick={() => handlePreview(doc)}
-                  style={{
-                    backgroundColor: 'transparent',
-                    color: '#e2e1e8',
-                    border: '1px solid #332d4a',
-                    padding: '0.4rem 0.75rem',
-                    borderRadius: '4px',
-                    fontSize: '0.8rem',
-                    cursor: 'pointer'
-                  }}
-                >
-                  👁️ Inspect
-                </button>
               </div>
             </div>
           ))}
         </div>
       )}
 
-      {/* Pagination Load More */}
+      {/* Pagination Load More Button */}
       {hasMore && !isLoading && docs.length > 0 && (
-        <div style={{ textAlign: 'center', marginTop: '2rem' }}>
+        <div style={{ textAlign: 'center', marginTop: '2.5rem' }}>
           <button
             onClick={handleLoadMore}
             disabled={isFetchingMore}
-            style={{
-              backgroundColor: '#1e1b2e',
-              color: '#00ff00',
-              fontWeight: 'bold',
-              border: '1px solid #332d4a',
-              padding: '0.6rem 1.5rem',
-              borderRadius: '4px',
-              cursor: isFetchingMore ? 'not-allowed' : 'pointer'
-            }}
+            class="di-btn di-btn-primary"
+            style={{ padding: '0.85rem 2rem', fontSize: '0.95rem' }}
           >
-            {isFetchingMore ? 'Loading More Documents...' : 'Load Next Page →'}
+            {isFetchingMore ? (
+              <>
+                <span class="di-spinner"></span>
+                <span>Loading more docs...</span>
+              </>
+            ) : (
+              <span>Load More Documentation</span>
+            )}
           </button>
         </div>
       )}
 
       {/* Preview Modal */}
-      {previewContent && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          backgroundColor: 'rgba(0, 0, 0, 0.8)',
-          zIndex: 9999,
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          padding: '1.5rem'
-        }}>
-          <div style={{
-            backgroundColor: '#0d0914',
-            border: '1px solid #b026ff',
-            borderRadius: '8px',
-            maxWidth: '900px',
-            width: '100%',
-            maxHeight: '85vh',
-            display: 'flex',
-            flexDirection: 'column',
-            overflow: 'hidden'
-          }}>
-            <div style={{
-              padding: '1rem 1.5rem',
-              borderBottom: '1px solid #1e1b2e',
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center'
-            }}>
-              <h3 style={{ margin: 0, color: '#ffffff' }}>
-                Preview: {previewDomain}
+      {showPreviewModal && (
+        <div class="di-modal-backdrop" onClick={() => setShowPreviewModal(false)}>
+          <div class="di-modal-dialog" onClick={(e) => e.stopPropagation()}>
+            <div class="di-modal-header">
+              <h3 class="di-modal-title">
+                {selectedDoc?.type || selectedDoc?.domain} — Corpus Preview
               </h3>
               <button
-                onClick={() => { setPreviewContent(null); setPreviewDomain(null); }}
-                style={{
-                  backgroundColor: 'transparent',
-                  color: '#ef4444',
-                  border: 'none',
-                  fontSize: '1.25rem',
-                  cursor: 'pointer'
-                }}
+                onClick={() => setShowPreviewModal(false)}
+                style={{ background: 'none', border: 'none', fontSize: '1.5rem', cursor: 'pointer', fontWeight: 700, color: 'var(--di-heading)' }}
               >
                 ✕
               </button>
             </div>
-            <div style={{
-              padding: '1.5rem',
-              overflowY: 'auto',
-              flex: 1,
-              fontFamily: 'monospace',
-              fontSize: '0.85rem',
-              color: '#cccccc',
-              whiteSpace: 'pre-wrap',
-              backgroundColor: '#050308'
-            }}>
-              {previewContent}
+            <div class="di-modal-body">
+              <pre style={{ margin: 0, fontFamily: 'inherit', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                {previewContent}
+              </pre>
+            </div>
+            <div class="di-modal-footer">
+              <button
+                onClick={handleCopyPreview}
+                class="di-btn di-btn-secondary"
+              >
+                {copiedPreview ? '✓ Copied!' : 'Copy Markdown'}
+              </button>
+              <button
+                onClick={() => selectedDoc && handleDownloadDoc(selectedDoc)}
+                class="di-btn di-btn-primary"
+              >
+                Download File
+              </button>
+              <button
+                onClick={() => setShowPreviewModal(false)}
+                class="di-btn di-btn-neutral"
+              >
+                Close
+              </button>
             </div>
           </div>
         </div>
@@ -479,16 +361,10 @@ const ViewPageApp = () => {
   );
 };
 
-const mountViewApp = () => {
-  const root = document.getElementById('docingest-view-root');
-  if (root) {
-    render(<ViewPageApp />, root);
-  }
-};
-
-document.addEventListener('nav', mountViewApp);
-if (document.readyState === 'complete' || document.readyState === 'interactive') {
-  mountViewApp();
+// Automatic hydration mounting on target DOM container
+const rootElement = document.getElementById('docingest-view-root');
+if (rootElement) {
+  render(<ViewPageApp />, rootElement);
 }
 
-export default "";
+export default ViewPageApp;
